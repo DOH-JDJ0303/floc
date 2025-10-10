@@ -322,31 +322,3 @@ def pcoa_plot(
 
     return fig
 
-
-def mds_plot(
-    mh_map,
-    dist_cache,
-    *,
-    n_components: int = 2,
-    metric: bool = True,            # kept for API compatibility; ignored
-    random_state: int = 42,         # ignored
-    max_iter: int = 1000,           # ignored
-    n_init: int = 4,                # ignored
-    title: str = "PCoA of MinHash distances",
-    save_html: Optional[str] = None
-) -> go.Figure:
-    """
-    Backward-compatible wrapper: MDS -> PCoA.
-    Ignores MDS-specific args and calls pcoa_plot(...).
-    """
-    logging.info("mds_plot(): Using PCoA (Classical MDS) instead of iterative MDS. "
-                 "Args metric/random_state/max_iter/n_init are ignored.")
-    return pcoa_plot(
-        mh_map,
-        dist_cache,
-        n_components=n_components,
-        title=title,
-        save_html=save_html,
-    )
-
-

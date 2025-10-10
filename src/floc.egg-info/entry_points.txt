@@ -1,0 +1,2 @@
+[console_scripts]
+floc = floc.cli:main

@@ -1,0 +1,76 @@
+Metadata-Version: 2.4
+Name: floc
+Version: 1.0.0
+Summary: Genomic clustering tool for population-level surveillance
+Author-email: Jared Johnson <jared.johnson@doh.wa.gov>
+License:                                  Apache License
+                                   Version 2.0, January 2004
+                                http://www.apache.org/licenses/
+        
+        TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+        
+        Copyright 2025 Washington State Department of Health
+        
+        Licensed under the Apache License, Version 2.0 (the "License");
+        you may not use this file except in compliance with the License.
+        You may obtain a copy of the License at
+        
+           http://www.apache.org/licenses/LICENSE-2.0
+        
+        Unless required by applicable law or agreed to in writing, software
+        distributed under the License is distributed on an "AS IS" BASIS,
+        WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+        See the License for the specific language governing permissions and
+        limitations under the License.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.26.4
+Requires-Dist: screed<1.2,>=1.1
+Requires-Dist: psutil>=5.9
+Requires-Dist: plotly>=5.20
+Requires-Dist: sourmash<5.0,>=4.8
+Requires-Dist: scikit-learn
+Dynamic: license-file
+
+# floc
+Floc is an iterative genome clustering tool. Genome assemblies are placed into new or existing clusters based on pairwise genetic distances. Genetic distance is estimated using the Sourmash k-mer containment method. 
+
+> [!tip]
+> Floc is short for _flocculate_, which is a term often used to describe the coelescnce of suspended particles (yeast, protein, etc.,) in a fermentation, like a sourmash! 
+
+## Installation
+### From source
+```
+git clone https://github.com/DOH-JDJ0303/floc
+cd floc
+pip install --upgrade pip
+pip install .
+```
+
+### With Docker
+```
+docker build -t floc:latest .
+docker run --rm -v "$PWD":/work -w /work floc:latest floc --help
+```
+
+## Quickstart
+### Running for the first time
+```
+floc -i assemblies/ -o db/
+```
+
+### Running any time after
+```
+floc -i new_assemblies/ db/sig/ -o db/
+```
+## Outputs
+|File / Directory|Description|
+|-|-|
+|`clusters.csv`|Cluster results for each sample in input|
+|`sigs/*`|Sourmash signature files. These contain cluster information in the `filename` field and can be re-used for iterative clustering|
+|`pcoe.html`|PCoA plot generated from all pairwise distances. Only created if run with `--plot`|
+|`abundance_zscores.csv`|Per-sample summary of minhash abundance z-scores|
+|`global_containment.csv`|Per-sample summary of minhash global containment|
+
+

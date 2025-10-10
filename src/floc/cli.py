@@ -7,7 +7,7 @@ import logging
 from .utils import set_up_logging
 from .io_ops import parse_input, write_cluster_csv
 from .sm_ops import DistanceCache, build_minhash_map, load_minhash_map, write_sigs
-from .cluster import group_clusters, assign_to_cluster, create_new_clusters, mds_plot
+from .cluster import group_clusters, assign_to_cluster, create_new_clusters, pcoa_plot
 from .qc import global_containment, abundance_zscores
 
 __version__ = "1.0"
@@ -35,7 +35,7 @@ def build_parser():
     p.add_argument("--min-global-abund", type=float, default=0.05, help="Minimum abundance of a global hash to be included in global distance calculation")
     p.add_argument("--max-global-dist", type=float, default=0.5, help="Maximum fraction of sample hashes missing from global hashes after abundance filtering")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing signature files")
-    p.add_argument("--mds-plot", dest="mds_plot", action="store_true", help="Create MDS plot. Can take a long time with many samples.")
+    p.add_argument("--plot", dest="plot", action="store_true", help="Create PCoA plot. Can take a long time with many samples.")
     p.add_argument("--version", action="version", version=__version__)
     return p
 
@@ -139,8 +139,8 @@ def main(argv=None):
             if csv_path:
                 logger.info(f"Wrote cluster summary CSV → {csv_path}")
 
-            if args.mds_plot:
-                mds_plot(mh_out, dist_cache, save_html=os.path.join(args.outdir, 'pcoa.html'))
+            if args.plot:
+                pcoa_plot(mh_out, dist_cache, save_html=os.path.join(args.outdir, 'pcoa.html'))
         else:
             logger.warning("No clusters found; nothing to write.")
 
