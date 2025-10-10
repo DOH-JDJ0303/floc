@@ -1,4 +1,4 @@
-# floc
+# Floc :beer:
 Floc is an iterative genome clustering tool. Genome assemblies are placed into new or existing clusters based on pairwise genetic distances. Genetic distance is estimated using the Sourmash k-mer containment method. 
 
 :rainbow: **Fun Fact:** Floc is short for _flocculate_, which is a term often used in fermentation (like a **sourmash**!) to describe the coalescence of suspended particles (yeast, protein, etc.,)!
