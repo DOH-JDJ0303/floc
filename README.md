@@ -1,8 +1,7 @@
 # floc
 Floc is an iterative genome clustering tool. Genome assemblies are placed into new or existing clusters based on pairwise genetic distances. Genetic distance is estimated using the Sourmash k-mer containment method. 
 
-> [!tip]
-> Floc is short for _flocculate_, which is a term often used to describe the coelescnce of suspended particles (yeast, protein, etc.,) in a fermentation, like a sourmash! 
+:rainbow: **Fun Fact:** Floc is short for _flocculate_, which is a term often used in fermentation (like a **sourmash**!) to describe the coalescence of suspended particles (yeast, protein, etc.,)!
 
 ## Installation
 ### From source
@@ -53,7 +52,7 @@ options:
 |-|-|
 |`clusters.csv`|Cluster results for each sample in input|
 |`sigs/*`|Sourmash signature files. These contain cluster information in the `filename` field and can be re-used for iterative clustering|
-|`pcoe.html`|PCoA plot generated from all pairwise distances. Only created if run with `--plot`|
+|`pcoa.html`|PCoA plot generated from all pairwise distances. Only created if run with `--plot`|
 |`abundance_zscores.csv`|Per-sample summary of minhash abundance z-scores|
 |`global_containment.csv`|Per-sample summary of minhash global containment|
 
