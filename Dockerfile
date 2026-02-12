@@ -14,6 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Minimal runtime packages (CA certs, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -21,15 +22,12 @@ WORKDIR /app
 # ---- Dep layer: copy just metadata so we can cache dependency resolution
 COPY pyproject.toml README.md LICENSE /app/
 
-# If your package code uses src/ for PEP 517 build backends to inspect,
-# you can optionally pre-copy a minimal src tree; usually not required.
-
-# Upgrade pip + build backend (PEP 517)
-RUN python -m pip install --upgrade pip build
-
-# Create a virtual environment (optional but keeps global site clean)
+# Create a virtual environment (keeps global site clean)
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip + install build *inside the venv*
+RUN pip install --upgrade pip build
 
 # Resolve & download wheels for project (without source code yet)
 # This builds a wheel using only the metadata/config; if build requires code,
@@ -52,8 +50,3 @@ USER appuser
 
 # Default working directory for runtime
 WORKDIR /workspace
-
-# The package exposes a console_script entrypoint named "floc"
-ENTRYPOINT ["floc"]
-# Or, if you prefer explicit python module invocation:
-# ENTRYPOINT ["python", "-m", "floc.cli"]
