@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import statistics
-from typing import Any, Dict, Tuple, List, Optional  # ← add List, Optional
+from typing import Any, Dict, Tuple, List, Optional
 
 import numpy as np
 from sklearn.cluster import DBSCAN
@@ -56,14 +56,14 @@ def assign_to_cluster(
 
     merged_dist_cache = DistanceCache()
 
-    min_dist = 1
     for qid, qinfo in mh_fx.items():
+        min_dist = 1
         candidate_clusters: List[str] = []
         for clabel, cinfo in mh_merged.items():
             local_map = {qid: qinfo} | cinfo
             d = _merged_distance(qid, clabel, mh_map=local_map, cache=merged_dist_cache)
+            # logging.info(f"{qid} distance to {clabel}: {d}")
             if d < threshold and d <= min_dist:
-                # logging.info(f"{qid} distance to {clabel}: {d}")
                 min_dist = d
                 candidate_clusters.append(clabel)
 
@@ -77,23 +77,14 @@ def assign_to_cluster(
     return assigned, remainder
 
 
-def _next_cluster_label(existing: ClusterMap) -> str:
-    """
-    Generate a new **string** cluster label not present in `existing`.
-    Handles int-like or string keys, returns '1', '2', ...
-    """
-    taken = set()
-    for k in existing.keys():
+def _next_cluster_label(cmap: ClusterMap) -> str:
+    current = [0]
+    for c in cmap.keys():
         try:
-            taken.add(int(k))
+            current.append(int(c))
         except Exception:
-            # if you ever mix 'c0001' style, you could parse here
-            pass
-    cur = 1
-    while cur in taken:
-        cur += 1
-    return str(cur)  # ← always string
-
+            raise ValueError(f"Cluster names must be integers: {c}")
+    return str(max(current) + 1)
 
 def _pairwise_distance_matrix(ids: List[str], mh_map: MHMap, cache: DistanceCache) -> np.ndarray:
     n = len(ids)
@@ -113,7 +104,7 @@ def _add_members_to_cluster(
     mh_fx: MHMap,
     mh_clust: ClusterMap,
 ) -> None:
-    clabel = str(clabel)  # ← normalize
+    clabel = str(clabel)
     if clabel not in mh_clust:
         mh_clust[clabel] = {}
     for qid in member_ids:
@@ -132,56 +123,67 @@ def create_new_clusters(
 ) -> ClusterMap:
     mh_clust: ClusterMap = {} if existing is None else {str(k): dict(v) for k, v in existing.items()}
 
+    # No samples
     qids_all = list(mh_fx.keys())
     if len(qids_all) == 0:
         return mh_clust
 
+    # One sample
     if len(qids_all) == 1:
         clabel = _next_cluster_label(mh_clust)
         _add_members_to_cluster(clabel, [qids_all[0]], mh_fx, mh_clust)
         return mh_clust
 
+    # Two or more samples
     remainder_ids = qids_all[:]
 
     while remainder_ids:
+        # Subset to batch size (avoid compute limits)
         batch_ids = remainder_ids[:batch_size]
 
+        # Batch size was set to 1 (why tho?)
         if len(batch_ids) == 1:
             clabel = _next_cluster_label(mh_clust)
             _add_members_to_cluster(clabel, batch_ids, mh_fx, mh_clust)
             remainder_ids = remainder_ids[1:]
+        # Batch size is > 1
         else:
             D = _pairwise_distance_matrix(batch_ids, mh_fx, dist_cache)
             db = DBSCAN(eps=eps, min_samples=min_samples, metric="precomputed")
             labels = db.fit_predict(D)
 
+            # Group samples by DBSCAN cluster label (not final cluster label - adjusted next step)
             label_to_members: Dict[int, List[str]] = {}
             for idx, lbl in enumerate(labels):
                 label_to_members.setdefault(int(lbl), []).append(batch_ids[idx])
 
+            # Update cluster label based on existing labels - skips "noise" (-1) for now
             for lbl, members in label_to_members.items():
                 if lbl == -1:
                     continue
                 clabel = _next_cluster_label(mh_clust)
                 _add_members_to_cluster(clabel, members, mh_fx, mh_clust)
-
+            
+            # Assign cluster labels for "noise" - each in own cluster
             for noise_id in label_to_members.get(-1, []):
                 clabel = _next_cluster_label(mh_clust)
                 _add_members_to_cluster(clabel, [noise_id], mh_fx, mh_clust)
 
+            # Update the remainder based on the batch size
             remainder_ids = remainder_ids[len(batch_ids):]
 
+        # Attempt to assign remainder to existing clusters, again. Really only needed for the "new" clusters just created above
         if remainder_ids:
             remaining_map: MHMap = {qid: mh_fx[qid] for qid in remainder_ids}
             assigned, still_left = assign_to_cluster(
                 remaining_map, mh_clust, threshold=eps, dist_cache=dist_cache,
             )
 
-            # *** IMPORTANT: merge assigned into mh_clust ***
             for qid, rec in assigned.items():
                 clabel = str(rec['cluster'])
                 mh_clust.setdefault(clabel, {})[qid] = rec
 
+            # Figure out what is left
             remainder_ids = list(still_left.keys())
 
     return mh_clust
@@ -373,400 +375,3 @@ def calculate_cluster_distances(new_ids, mh_clust, dist_cache, outdir):
             for i, row_id in enumerate(cluster_ids):
                 row_vals = '\t'.join(str(D[i, j]) for j in range(n))
                 f.write(row_id + '\t' + row_vals + '\n')
-
-
-import csv
-from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple, Optional
-
-import numpy as np
-from sklearn.metrics import (
-    adjusted_rand_score,
-    normalized_mutual_info_score,
-    adjusted_mutual_info_score,
-    v_measure_score,
-    homogeneity_score,
-    completeness_score,
-)
-from scipy.optimize import linear_sum_assignment
-
-
-# ----------------------------
-# Result container (no pandas)
-# ----------------------------
-@dataclass
-class BenchmarkResult:
-    # Global agreement
-    ari: float
-    nmi: float
-    ami: float
-    v_measure: float
-    homogeneity: float
-    completeness: float
-
-    # Counts
-    n_overlap: int
-    n_query_only: int
-    n_target_only: int
-    n_query_clusters: int
-    n_target_clusters: int
-
-    # Sample-level diagnostics
-    sample_rows: List[Dict[str, str]]      # [{'sample':..., 'query':..., 'target':..., 'changed': '0/1'}, ...]
-    changed_rows: List[Dict[str, str]]     # subset where changed==1
-    instability_by_query: List[Tuple[str, float, int]]   # (query_cluster, frac_changed, n)
-    instability_by_target: List[Tuple[str, float, int]]  # (target_cluster, frac_changed, n)
-
-    # Contingency (cluster-to-cluster)
-    query_clusters: List[str]
-    target_clusters: List[str]
-    contingency: Dict[str, Dict[str, int]]         # counts: contingency[q][t] -> n
-    contingency_row_norm: Dict[str, Dict[str, float]]  # per-query normalized
-    contingency_col_norm: Dict[str, Dict[str, float]]  # per-target normalized
-
-    # Best-match mapping (Hungarian)
-    mapping_query_to_target: Dict[str, str]
-    mapping_target_to_query: Dict[str, str]
-
-    # Split/merge hints
-    split_hints: List[Dict[str, Any]]   # per query cluster
-    merge_hints: List[Tuple[str, int]]  # (target_cluster, n_query_clusters_contributing)
-
-
-def _drop_ext_default(x: str) -> str:
-    s = str(x)
-    for suf in (".fastq.gz", ".fq.gz", ".fasta.gz", ".fa.gz", ".fna.gz", ".vcf.gz"):
-        if s.endswith(suf):
-            return s[: -len(suf)]
-    if "." in s:
-        return s.rsplit(".", 1)[0]
-    return s
-
-
-def _sorted_unique(vals: List[str]) -> List[str]:
-    return sorted(set(vals), key=lambda v: (str(v)))
-
-
-def _safe_div(n: float, d: float) -> float:
-    return float(n / d) if d else float("nan")
-
-
-def _top_n(items, n=10, key=None, reverse=True):
-    items = list(items)
-    items.sort(key=key, reverse=reverse)
-    return items[:n]
-
-
-def benchmark(
-    query: Dict[Any, Dict[Any, Any]],
-    target_csv: str,
-    *,
-    target_assembly_col: str = "assembly",
-    target_cluster_col: str = "cluster",
-    drop_ext_fn=_drop_ext_default,
-    error_on_duplicate_query_membership: bool = True,
-    print_report: bool = True,
-    top_k_changed: int = 50,
-    max_print_table: int = 30,   # avoid printing huge contingency tables
-) -> BenchmarkResult:
-    """
-    Compare query vs target clustering with:
-      - ARI, NMI, AMI, V-measure, homogeneity, completeness
-      - Contingency table + row/col-normalized tables
-      - Sample-level moved list + per-cluster instability
-      - Split/merge hints
-      - Best-match mapping (Hungarian assignment on overlaps)
-
-    query format: {query_cluster_id: {sample_id: ...}, ...}
-    target_csv: CSV with columns [assembly, cluster] (configurable).
-    """
-
-    # ----------------------------
-    # Load target labels: {sample -> target_cluster}
-    # ----------------------------
-    target_label_by_sample: Dict[str, str] = {}
-    with open(target_csv, "r", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            asm = row.get(target_assembly_col)
-            clu = row.get(target_cluster_col)
-            if not asm or not clu:
-                continue
-            sid = drop_ext_fn(str(asm))
-            target_label_by_sample[sid] = str(clu)
-
-    # ----------------------------
-    # Build query labels: {sample -> query_cluster}
-    # ----------------------------
-    query_label_by_sample: Dict[str, str] = {}
-    duplicates: Dict[str, List[str]] = {}
-
-    for q_cluster, members in (query or {}).items():
-        if not isinstance(members, dict):
-            continue
-        q_cluster = str(q_cluster)
-        for raw_sid in members.keys():
-            sid = drop_ext_fn(str(raw_sid))
-            if sid in query_label_by_sample and query_label_by_sample[sid] != q_cluster:
-                duplicates.setdefault(sid, [query_label_by_sample[sid]]).append(q_cluster)
-            query_label_by_sample[sid] = q_cluster
-
-    if duplicates and error_on_duplicate_query_membership:
-        example = list(duplicates.items())[:10]
-        msg = "Samples appear in multiple query clusters (showing up to 10):\n"
-        msg += "\n".join([f"  {sid}: {clist}" for sid, clist in example])
-        raise ValueError(msg)
-
-    # ----------------------------
-    # Align samples present in both
-    # ----------------------------
-    shared = sorted(set(query_label_by_sample) & set(target_label_by_sample))
-    if not shared:
-        raise ValueError("No overlapping samples between query and target clusters.")
-
-    q_labels = [query_label_by_sample[s] for s in shared]
-    t_labels = [target_label_by_sample[s] for s in shared]
-
-    n_overlap = len(shared)
-    n_query_only = len(query_label_by_sample) - n_overlap
-    n_target_only = len(target_label_by_sample) - n_overlap
-    n_query_clusters = len(set(q_labels))
-    n_target_clusters = len(set(t_labels))
-
-    # ----------------------------
-    # Global agreement metrics
-    # ----------------------------
-    ari = float(adjusted_rand_score(t_labels, q_labels))
-    nmi = float(normalized_mutual_info_score(t_labels, q_labels))
-    ami = float(adjusted_mutual_info_score(t_labels, q_labels))
-    v_measure = float(v_measure_score(t_labels, q_labels))
-    homogeneity = float(homogeneity_score(t_labels, q_labels))
-    completeness = float(completeness_score(t_labels, q_labels))
-
-    # ----------------------------
-    # Sample-level rows + moved list
-    # ----------------------------
-    sample_rows: List[Dict[str, str]] = []
-    changed_rows: List[Dict[str, str]] = []
-
-    for s, q, t in zip(shared, q_labels, t_labels):
-        changed = "1" if q != t else "0"
-        row = {"sample": s, "query": q, "target": t, "changed": changed}
-        sample_rows.append(row)
-        if changed == "1":
-            changed_rows.append(row)
-
-    # ----------------------------
-    # Per-cluster instability (fraction changed)
-    # ----------------------------
-    # For query clusters
-    q_tot: Dict[str, int] = {}
-    q_chg: Dict[str, int] = {}
-    for row in sample_rows:
-        qc = row["query"]
-        q_tot[qc] = q_tot.get(qc, 0) + 1
-        if row["changed"] == "1":
-            q_chg[qc] = q_chg.get(qc, 0) + 1
-
-    instability_by_query = []
-    for qc, tot in q_tot.items():
-        chg = q_chg.get(qc, 0)
-        instability_by_query.append((qc, _safe_div(chg, tot), tot))
-    instability_by_query.sort(key=lambda x: (x[1], x[2]), reverse=True)
-
-    # For target clusters
-    t_tot: Dict[str, int] = {}
-    t_chg: Dict[str, int] = {}
-    for row in sample_rows:
-        tc = row["target"]
-        t_tot[tc] = t_tot.get(tc, 0) + 1
-        if row["changed"] == "1":
-            t_chg[tc] = t_chg.get(tc, 0) + 1
-
-    instability_by_target = []
-    for tc, tot in t_tot.items():
-        chg = t_chg.get(tc, 0)
-        instability_by_target.append((tc, _safe_div(chg, tot), tot))
-    instability_by_target.sort(key=lambda x: (x[1], x[2]), reverse=True)
-
-    # ----------------------------
-    # Contingency table: contingency[q][t] = count
-    # ----------------------------
-    query_clusters = _sorted_unique(q_labels)
-    target_clusters = _sorted_unique(t_labels)
-
-    contingency: Dict[str, Dict[str, int]] = {qc: {tc: 0 for tc in target_clusters} for qc in query_clusters}
-    for q, t in zip(q_labels, t_labels):
-        contingency[q][t] += 1
-
-    # Row-normalized (per query cluster)
-    contingency_row_norm: Dict[str, Dict[str, float]] = {}
-    for qc in query_clusters:
-        row_sum = sum(contingency[qc].values())
-        contingency_row_norm[qc] = {tc: _safe_div(contingency[qc][tc], row_sum) for tc in target_clusters}
-
-    # Col-normalized (per target cluster)
-    col_sums: Dict[str, int] = {tc: 0 for tc in target_clusters}
-    for qc in query_clusters:
-        for tc in target_clusters:
-            col_sums[tc] += contingency[qc][tc]
-
-    contingency_col_norm: Dict[str, Dict[str, float]] = {qc: {} for qc in query_clusters}
-    for qc in query_clusters:
-        for tc in target_clusters:
-            contingency_col_norm[qc][tc] = _safe_div(contingency[qc][tc], col_sums[tc])
-
-    # ----------------------------
-    # Best-match mapping (Hungarian) on overlaps
-    # ----------------------------
-    ct = np.array([[contingency[qc][tc] for tc in target_clusters] for qc in query_clusters], dtype=int)
-    cost = -ct  # maximize overlap
-    row_ind, col_ind = linear_sum_assignment(cost)
-
-    mapping_q2t: Dict[str, str] = {}
-    mapping_t2q: Dict[str, str] = {}
-    for i, j in zip(row_ind, col_ind):
-        qc = str(query_clusters[i])
-        tc = str(target_clusters[j])
-        mapping_q2t[qc] = tc
-        mapping_t2q[tc] = qc
-
-    # ----------------------------
-    # Split / merge hints
-    # ----------------------------
-    split_hints: List[Dict[str, Any]] = []
-    for qc in query_clusters:
-        row = contingency[qc]
-        size = sum(row.values())
-        if size == 0:
-            continue
-        touched = sum(1 for v in row.values() if v > 0)
-        best_tc = max(row.items(), key=lambda kv: kv[1])[0]
-        best_overlap = row[best_tc]
-        purity = _safe_div(best_overlap, size)
-        hung_tc = mapping_q2t.get(qc)
-        hung_overlap = row.get(hung_tc, 0) if hung_tc is not None else 0
-        split_hints.append(
-            {
-                "query_cluster": qc,
-                "size": size,
-                "targets_touched": touched,
-                "best_target_by_max": best_tc,
-                "best_overlap": best_overlap,
-                "purity_to_best_target": purity,
-                "hungarian_target": hung_tc,
-                "hungarian_overlap": hung_overlap,
-            }
-        )
-    # “splitty” clusters first: many targets touched, then low purity, then size
-    split_hints.sort(key=lambda d: (d["targets_touched"], -d["purity_to_best_target"], d["size"]), reverse=True)
-
-    # Merge hints: for each target cluster, how many query clusters contribute?
-    merge_hints: List[Tuple[str, int]] = []
-    for tc in target_clusters:
-        contributors = sum(1 for qc in query_clusters if contingency[qc][tc] > 0)
-        merge_hints.append((tc, contributors))
-    merge_hints.sort(key=lambda x: x[1], reverse=True)
-
-    # ----------------------------
-    # Reporting
-    # ----------------------------
-    if print_report:
-        print(
-            "=== Cluster Benchmark ===\n"
-            f"Overlap samples: {n_overlap}\n"
-            f"Query-only samples: {n_query_only}\n"
-            f"Target-only samples: {n_target_only}\n"
-            f"Query clusters (overlap): {n_query_clusters}\n"
-            f"Target clusters (overlap): {n_target_clusters}\n"
-        )
-
-        print(
-            "=== Agreement (label-invariant) ===\n"
-            f"ARI:         {ari:.6f}\n"
-            f"NMI:         {nmi:.6f}\n"
-            f"AMI:         {ami:.6f}\n"
-            f"V-measure:   {v_measure:.6f}\n"
-            f"Homogeneity: {homogeneity:.6f}\n"
-            f"Completeness:{completeness:.6f}\n"
-        )
-
-        print("=== Most unstable query clusters (frac_changed, n) ===")
-        for qc, frac, n in instability_by_query[:10]:
-            print(f"{qc}\t{frac:.3f}\t{n}")
-        print()
-
-        print("=== Most unstable target clusters (frac_changed, n) ===")
-        for tc, frac, n in instability_by_target[:10]:
-            print(f"{tc}\t{frac:.3f}\t{n}")
-        print()
-
-        print("=== Split hints (query clusters touching many targets) ===")
-        for d in split_hints[:10]:
-            print(
-                f"{d['query_cluster']}\t"
-                f"n={d['size']}\t"
-                f"targets_touched={d['targets_touched']}\t"
-                f"purity={d['purity_to_best_target']:.3f}\t"
-                f"best_target={d['best_target_by_max']}\t"
-                f"hungarian_target={d['hungarian_target']}"
-            )
-        print()
-
-        print("=== Merge hints (targets with many contributing query clusters) ===")
-        for tc, contributors in merge_hints[:10]:
-            print(f"{tc}\tcontributors={contributors}")
-        print()
-
-        n_changed = len(changed_rows)
-        print(f"=== Samples that changed (n={n_changed}) ===")
-        if n_changed == 0:
-            print("(none)\n")
-        else:
-            for row in changed_rows[:top_k_changed]:
-                print(f"{row['sample']}\tquery={row['query']}\ttarget={row['target']}")
-            if n_changed > top_k_changed:
-                print(f"... ({n_changed - top_k_changed} more)\n")
-
-        # Print contingency table (counts) if not too large
-        if len(query_clusters) <= max_print_table and len(target_clusters) <= max_print_table:
-            print("=== Contingency table (query x target) [counts] ===")
-            header = ["query\\target"] + target_clusters
-            print("\t".join(header))
-            for qc in query_clusters:
-                row = [qc] + [str(contingency[qc][tc]) for tc in target_clusters]
-                print("\t".join(row))
-            print()
-        else:
-            print(
-                f"=== Contingency table not printed (size {len(query_clusters)}x{len(target_clusters)} "
-                f"> max_print_table={max_print_table}) ===\n"
-            )
-
-    return BenchmarkResult(
-        ari=ari,
-        nmi=nmi,
-        ami=ami,
-        v_measure=v_measure,
-        homogeneity=homogeneity,
-        completeness=completeness,
-        n_overlap=n_overlap,
-        n_query_only=n_query_only,
-        n_target_only=n_target_only,
-        n_query_clusters=n_query_clusters,
-        n_target_clusters=n_target_clusters,
-        sample_rows=sample_rows,
-        changed_rows=changed_rows,
-        instability_by_query=instability_by_query,
-        instability_by_target=instability_by_target,
-        query_clusters=query_clusters,
-        target_clusters=target_clusters,
-        contingency=contingency,
-        contingency_row_norm=contingency_row_norm,
-        contingency_col_norm=contingency_col_norm,
-        mapping_query_to_target=mapping_q2t,
-        mapping_target_to_query=mapping_t2q,
-        split_hints=split_hints,
-        merge_hints=merge_hints,
-    )
-

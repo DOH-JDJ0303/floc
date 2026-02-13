@@ -7,6 +7,7 @@ from typing import Any, Dict, Tuple, Optional, Union
 import sourmash as sm
 from sourmash.signature import SourmashSignature
 import screed
+import gzip
 
 
 # ----------------------------
@@ -79,19 +80,7 @@ def _merged_distance(
 # Helpers for parameter checks
 # ----------------------------
 
-def _norm_moltype(s: Optional[str]) -> str:
-    """Normalize molecule type to a canonical lower-case string."""
-    if not s:
-        return ""
-    s = str(s).lower()
-    # common aliases
-    if s in {"dna", "dayhoff", "hp", "protein"}:
-        return s
-    # fall back to as-is string
-    return s
-
-
-def _check_or_downsample_to_scaled(mh: sm.MinHash, desired_scaled: int) -> sm.MinHash:
+def rescale_mh(mh: sm.MinHash, desired_scaled: int) -> sm.MinHash:
     """Downsample to desired_scaled. Only possible if desired_scaled >= mh.scaled (coarser)."""
     if mh.num:  # num-based sketches cannot be converted to scaled
         raise ValueError("Cannot convert a fixed-num MinHash to scaled.")
@@ -104,19 +93,6 @@ def _check_or_downsample_to_scaled(mh: sm.MinHash, desired_scaled: int) -> sm.Mi
     )
 
 
-def _check_or_downsample_to_num(mh: sm.MinHash, desired_num: int) -> sm.MinHash:
-    """Downsample to desired_num. Only possible if desired_num <= mh.num."""
-    if mh.scaled:  # scaled-based sketches cannot be converted to num
-        raise ValueError("Cannot convert a scaled MinHash to fixed-num.")
-    if mh.num == desired_num:
-        return mh
-    if mh.num and desired_num <= mh.num:
-        return mh.downsample(num=desired_num)
-    raise ValueError(
-        f"Cannot downsample to larger num (requested {desired_num}, have {mh.num})."
-    )
-
-
 # ----------------------------
 # MinHash builders / loaders
 # ----------------------------
@@ -126,23 +102,9 @@ def build_minhash_map(
     ksize: int,
     *,
     scaled: Optional[int] = None,
-    num: Optional[int] = None,
-    seed: int = 42,
-    moltype: str = "dna",
-    track_abundance: bool = True,
+    seed: int = 42
 ) -> Dict[str, Dict[str, Any]]:
-    """
-    Build a MinHash for each input sequence file with the EXACT requested parameters:
-      - ksize, seed, moltype, track_abundance
-      - either scaled (recommended) or num (fixed-size)
-
-    Returns:
-      { sample_id: {'mh': MinHash, 'cluster': None}, ... }
-    """
-    if (scaled is None) == (num is None):
-        raise ValueError("Specify exactly one of 'scaled' or 'num'.")
-
-    mtype = _norm_moltype(moltype)
+    
     mh_map: Dict[str, Dict[str, Any]] = {}
 
     for sid, path in files_fx.items():
@@ -154,24 +116,16 @@ def build_minhash_map(
             seq_chunks.append(rec.sequence if hasattr(rec, "sequence") else rec["sequence"])
         seq = "".join(seq_chunks)
 
-        if scaled is not None:
-            mh = sm.MinHash(
-                n=0,
-                ksize=ksize,
-                seed=seed,
-                scaled=scaled,
-                track_abundance=track_abundance,
-            )
-        else:
-            mh = sm.MinHash(
-                n=num,
-                ksize=ksize,
-                seed=seed,
-                track_abundance=track_abundance,
-            )
-        # set molecule type at the signature level when writing; MinHash carries k/seed/abundance.
+        mh = sm.MinHash(
+            n=0,
+            ksize=ksize,
+            seed=seed,
+            scaled=scaled,
+            track_abundance=True,
+        )
+
         mh.add_sequence(seq, force=True)
-        mh_map[sid] = {'mh': mh, 'cluster': None, 'moltype': mtype}
+        mh_map[sid] = {'mh': mh, 'cluster': None}
     return mh_map
 
 
@@ -201,23 +155,9 @@ def load_minhash_map(
     *,
     ksize: int,
     seed: int = 42,
-    moltype: str = "dna",
-    track_abundance: bool = True,
-    scaled: Optional[int] = None,
-    num: Optional[int] = None,
+    scaled: Optional[int] = None
 ) -> Dict[str, Dict[str, Any]]:
-    """
-    Load signatures and COERCE/VALIDATE them to match requested params.
-    For scaled-based: will downsample to 'scaled' if needed (only to larger scaled).
-    For num-based: will downsample to 'num' if needed (only to smaller num).
 
-    Raises on incompatible inputs (different ksize/seed/molecule; wrong sketch type;
-    trying to go to smaller scaled or larger num; enabling abundance when absent).
-    """
-    if (scaled is None) == (num is None):
-        raise ValueError("Specify exactly one of 'scaled' or 'num'.")
-
-    want_mol = _norm_moltype(moltype)
     mh_map: Dict[str, Dict[str, Any]] = {}
 
     for sid, path in files_sig.items():
@@ -242,29 +182,16 @@ def load_minhash_map(
         if mh.seed != seed:
             raise ValueError(f"{sid}: seed mismatch (have {mh.seed}, want {seed}).")
 
-        # Molecule type (ask signature first, then mh if present)
-        have_mol = _norm_moltype(getattr(sig, "moltype", None) or getattr(mh, "molecule", None))
-        if have_mol and want_mol and have_mol != want_mol:
-            raise ValueError(f"{sid}: molecule type mismatch (have {have_mol}, want {want_mol}).")
-
         # Abundance tracking
-        if track_abundance and not mh.track_abundance:
+        if not mh.track_abundance:
             # cannot infer counts retroactively
             raise ValueError(
-                f"{sid}: requested track_abundance=True but signature does not track abundance."
+                f"{sid}: signature does not track abundance."
             )
-        if not track_abundance and mh.track_abundance:
-            # okay to accept; downstream can ignore counts
 
-            pass
+        mh = rescale_mh(mh, scaled)
 
-        # Coerce sketch type/size
-        if scaled is not None:
-            mh = _check_or_downsample_to_scaled(mh, scaled)
-        else:
-            mh = _check_or_downsample_to_num(mh, num)  # type: ignore[arg-type]
-
-        mh_map[sid] = {'mh': mh, 'cluster': cluster, 'moltype': want_mol or have_mol}
+        mh_map[sid] = {'mh': mh, 'cluster': cluster}
 
     return mh_map
 
@@ -275,16 +202,12 @@ def load_minhash_map(
 
 def _as_signature(
     sid: str,
-    obj: Union[SourmashSignature, sm.MinHash, Dict[str, Any]],
-    *,
-    require_cluster: bool = True,
-    moltype: str = "dna",
-) -> SourmashSignature:
+    obj: Union[SourmashSignature, sm.MinHash, Dict[str, Any]]
+    ) -> SourmashSignature:
     """
     Normalize different input shapes to a SourmashSignature, ensuring:
       - signature.name = sid
       - signature.filename = str(cluster)   <-- cluster goes here
-      - signature.moltype (if available) reflects requested type
     """
     # Extract minhash and cluster depending on input type
     if isinstance(obj, SourmashSignature):
@@ -302,20 +225,15 @@ def _as_signature(
     if mh is None or not isinstance(mh, sm.MinHash):
         raise ValueError(f"{sid}: missing/invalid MinHash")
 
-    if cluster is None and require_cluster:
+    if cluster is None:
         raise ValueError(f"{sid}: cluster not provided; cannot write without cluster")
 
-    filename_val = "" if cluster is None else str(cluster)
     s = SourmashSignature(
         mh,
         name=sid,
-        filename=filename_val,  # store cluster label here
+        filename=str(cluster)
     )
-    # Set moltype on the signature when possible (newer sourmash supports this metadata)
-    try:
-        s.moltype = _norm_moltype(moltype)  # type: ignore[attr-defined]
-    except Exception:
-        pass
+
     return s
 
 
@@ -323,9 +241,7 @@ def write_sigs(
     data: Dict[str, Union[SourmashSignature, sm.MinHash, Dict[str, Any]]],
     outdir: str,
     *,
-    require_cluster: bool = True,
-    subdir: str = "sigs",
-    moltype: str = "dna",
+    subdir: str = "sigs"
 ) -> None:
     """
     Save {sample_id: obj} to outdir/<subdir>/<sample_id>.sig
@@ -335,7 +251,7 @@ def write_sigs(
     os.makedirs(sig_dir, exist_ok=True)
 
     for sid, obj in data.items():
-        sig = _as_signature(sid, obj, require_cluster=require_cluster, moltype=moltype)
-        outpath = os.path.join(sig_dir, f"{sid}.sig")
-        with open(outpath, "wt") as fp:
+        sig = _as_signature(sid, obj)
+        outpath = os.path.join(sig_dir, f"{sid}.sig.gz")
+        with gzip.open(outpath, "wt") as fp:
             sm.save_signatures([sig], fp)

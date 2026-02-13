@@ -7,8 +7,8 @@ import logging
 from .utils import set_up_logging
 from .io_ops import parse_input, write_cluster_csv
 from .sm_ops import DistanceCache, build_minhash_map, load_minhash_map, write_sigs
-from .cluster import group_clusters, assign_to_cluster, create_new_clusters, pcoa_plot, calculate_cluster_distances, benchmark
-from .qc import global_containment, abundance_zscores
+from .cluster import group_clusters, assign_to_cluster, create_new_clusters, pcoa_plot, calculate_cluster_distances
+from .qc import global_containment
 
 __version__ = "1.0"
 
@@ -22,21 +22,19 @@ def build_parser():
     )
     p.add_argument("-o", "--outdir", default="./", help="Output directory")
     p.add_argument(
-        "-d", "--distance", default=0.1, type=float,
-        help="Distance threshold used to create clusters"
+        "-d", "--distance", default=0.03, type=float,
+        help="Distance threshold used to create clusters (default: 0.03)"
     )
     p.add_argument("--ksize", default=31, type=int, help="k-mer size")
     p.add_argument("--scaled", default=100, type=int, help="Scaling factor for signatures")
-    p.add_argument("--batch", default=100, type=int, help="Number of sequences to cluster per batch")
+    p.add_argument("--batch", default=1000, type=int, help="Number of sequences to cluster per batch")
     p.add_argument("--ignore-qc", action="store_true", help="Remove samples that fail QC without failing")
     p.add_argument("--skip-qc", action="store_true", help="Skip QC")
-    p.add_argument("--abund-z", type=float, default=2.58, help="Z-score threshold used for sample-level quality filtering based on total hash abundance (default: 2.58). Similar to genome size but allows for comparison between FASTA, FASTQ, and existing signatures. Higher values will increase the number of 'outliers'. Example - threshold of 2.58 includes ~99%% of samples across a normal distribution.")
-    p.add_argument("--min-global-abund", type=float, default=0.05, help="Minimum abundance of a global hash to be included in global distance calculation (default: 0.05). Larger values can reduce the impact of uncommon genomic elements and contamination on cluster assignment. Example - threshold of 0.05 requires that a hash is present in at least 5%% of the samples.")
-    p.add_argument("--max-global-dist", type=float, default=0.5, help="Maximum fraction of sample hashes missing from global hashes after abundance filtering (default: 0.5). Larger values require greater similarity between samples and vice versa. Example - threshold of 0.5 requires at least 50%% of the sample hashes are also in the filtered global hash.")
+    p.add_argument("--min-hash-freq", type=float, default=0.05, help="Minimum frequency for a hash to be included in the global hashes")
+    p.add_argument("--min-hash-frac", type=float, default=0.5, help="Minimum fraction of sample hashes shared with the global hashes after filtering")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing signature files")
     p.add_argument("--plot", dest="plot", action="store_true", help="Create PCoA plot. Can take a long time with many samples.")
     p.add_argument("--pairwise", action="store_true", help="Compute pairwise distance matrix for each cluster with a new sample.")
-    p.add_argument("--benchmark", type=str,help="Comma separated file containing expected cluster values for each sample.")
     p.add_argument("--version", action="version", version=__version__)
     return p
 
@@ -49,6 +47,9 @@ def main(argv=None):
 
     start = time.time()
     logger.info(f"floc v{__version__} starting")
+
+    args_smry = ', '.join([f"{k}={v}" for k, v in vars(args).items() if k not in ['input', 'outdir']])
+    logger.info(f"args: {args_smry}")
 
     try:
         dist_cache = DistanceCache()
@@ -86,12 +87,8 @@ def main(argv=None):
 
             # Filter samples with low global containment
             mh_global = mh_fx | mh_sig if mh_sig else mh_fx
-            mh_fx = global_containment(mh_fx, mh_global, max_dist=args.max_global_dist, min_abund=args.min_global_abund, outfile=os.path.join(args.outdir, 'global_containment.csv'))
+            mh_fx = global_containment(mh_fx, mh_global, min_hash_frac=args.min_hash_frac, min_hash_freq=args.min_hash_freq, outfile=os.path.join(args.outdir, 'global_containment.csv'))
 
-            # Filter samples with low kmer counts
-            mh_global = mh_fx | mh_sig if mh_sig else mh_fx
-            mh_fx = abundance_zscores(mh_global, list(mh_fx.keys()), threshold=args.abund_z, outfile=os.path.join(args.outdir, 'abundance_zscores.csv'))
-            
             if not args.ignore_qc:
                 if len(fx_keys) != len(mh_fx):
                     failed = '\n\t'.join([sid for sid in fx_keys if sid not in mh_fx]) + '\n'
@@ -148,10 +145,6 @@ def main(argv=None):
 
             if args.plot:
                 pcoa_plot(mh_out, dist_cache, save_html=os.path.join(args.outdir, 'pcoa.html'))
-
-            if args.benchmark:
-                benchmark(mh_clust, args.benchmark)
-
 
         else:
             logger.warning("No clusters found; nothing to write.")
