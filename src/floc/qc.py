@@ -124,7 +124,7 @@ def global_containment(
     if failing:
         logging.warning(f"Queries below threshold (d > {min_hash_frac:.4f}):")
         for r in failing:
-            logging.warning(f"id={r['id']} hash_freq={r['dist_to_global']:.4f}")
+            logging.warning(f"id={r['id']} hash_freq={r['frac_hash_in_global']:.4f}")
     else:
         logging.info("All queries are within the hash frequency threshold.")
 

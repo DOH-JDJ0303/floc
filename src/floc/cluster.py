@@ -35,7 +35,8 @@ def group_clusters(mh_map: MHMap) -> ClusterMap:
 def assign_to_cluster(
     mh_fx: MHMap,
     mh_clust: ClusterMap,
-    threshold: float
+    threshold: float,
+    dist_cache: Optional[DistanceCache] = None
 ) -> Tuple[MHMap, MHMap]:
     if not mh_clust:
         return {}, {qid: qinfo for qid, qinfo in mh_fx.items()}
@@ -54,7 +55,7 @@ def assign_to_cluster(
     assigned: MHMap = {}
     remainder: MHMap = {}
 
-    merged_dist_cache = DistanceCache()
+    merged_dist_cache = dist_cache if dist_cache is not None else DistanceCache()
 
     for qid, qinfo in mh_fx.items():
         min_dist = 1
