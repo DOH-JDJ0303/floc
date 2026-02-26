@@ -7,15 +7,17 @@ Floc is an iterative genome clustering tool. Genome assemblies are placed into n
 ### From source
 ```
 git clone https://github.com/DOH-JDJ0303/floc
-cd floc
-pip install --upgrade pip
-pip install .
+conda create -n floc python=3.11
+conda activate floc
+pip install "setuptools<70" wheel
+pip install --no-build-isolation floc/
 ```
 
 ### With Docker
 ```
-docker build -t floc:latest .
-docker run --rm -v "$PWD":/work -w /work floc:latest floc --help
+docker run --rm -v "$PWD":/work -w /work \
+    public.ecr.aws/o8h2f0o1/floc:latest \
+    floc --help
 ```
 
 ## Usage
