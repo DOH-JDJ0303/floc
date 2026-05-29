@@ -16,7 +16,7 @@ pip install --no-build-isolation floc/
 ### With Docker
 ```
 docker run --rm -v "$PWD":/work -w /work \
-    public.ecr.aws/o8h2f0o1/floc:latest \
+    public.ecr.aws/o8h2f0o1/floc:1.1 \
     floc --help
 ```
 
@@ -57,6 +57,7 @@ options:
 |`clusters.csv`|Cluster results for each sample in input|
 |`sigs/*`|Sourmash signature files. These contain cluster information in the `filename` field and can be re-used for iterative clustering|
 |`pcoa.html`|PCoA plot generated from all pairwise distances. Only created if run with `--plot`|
+|`nj_tree.html` & `nj_tree.nwk`|Neighbor-joining tree plot and newick file generated from all pairwise distances. Only created if run with `--plot`|
 |`global_containment.csv`|Per-sample summary of minhash global containment|
 
 ## Example

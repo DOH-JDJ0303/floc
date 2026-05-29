@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "floc"
-version = "1.0.1"
+version = "1.1"
 description = "Genomic clustering tool for population-level surveillance"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,8 @@ dependencies = [
   "psutil>=5.9",
   "plotly>=5.20",
   "sourmash>=4.8,<5.0",
-  "scikit-learn"
+  "scikit-learn",
+  "biopython>=1.84"
 ]
 
 [project.scripts]

@@ -7,7 +7,7 @@ import logging
 from .utils import set_up_logging
 from .io_ops import parse_input, write_cluster_csv
 from .sm_ops import DistanceCache, build_minhash_map, load_minhash_map, write_sigs
-from .cluster import group_clusters, assign_to_cluster, create_new_clusters, pcoa_plot, calculate_cluster_distances
+from .cluster import group_clusters, assign_to_cluster, create_new_clusters, pcoa_plot, nj_tree, calculate_cluster_distances
 from .qc import global_containment
 
 __version__ = "1.0"
@@ -33,7 +33,7 @@ def build_parser():
     p.add_argument("--min-hash-freq", type=float, default=0.05, help="Minimum frequency for a hash to be included in the global hashes")
     p.add_argument("--min-hash-frac", type=float, default=0.5, help="Minimum fraction of sample hashes shared with the global hashes after filtering")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing signature files")
-    p.add_argument("--plot", dest="plot", action="store_true", help="Create PCoA plot. Can take a long time with many samples.")
+    p.add_argument("--plot", dest="plot", action="store_true", help="Create PCoA and NJ tree plots. Can take a long time with many samples.")
     p.add_argument("--pairwise", action="store_true", help="Compute pairwise distance matrix for each cluster with a new sample.")
     p.add_argument("--version", action="version", version=__version__)
     return p
@@ -145,6 +145,7 @@ def main(argv=None):
 
             if args.plot:
                 pcoa_plot(mh_out, dist_cache, save_html=os.path.join(args.outdir, 'pcoa.html'))
+                nj_tree(mh_out, dist_cache, save_html=os.path.join(args.outdir, 'nj_tree.html'), save_newick=os.path.join(args.outdir, 'nj_tree.nwk'))
 
         else:
             logger.warning("No clusters found; nothing to write.")

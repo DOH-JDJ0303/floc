@@ -6,12 +6,9 @@ from typing import Any, Dict, Tuple, List, Optional
 
 import numpy as np
 from sklearn.cluster import DBSCAN
-from sklearn.manifold import MDS
 import plotly.graph_objects as go
-import sourmash as sm
 import os
 import gzip
-import csv
 
 from .sm_ops import DistanceCache, _distance, _merged_distance
 from .io_ops import drop_ext
@@ -28,9 +25,10 @@ def group_clusters(mh_map: MHMap) -> ClusterMap:
         if c is None:
             logging.debug(f"Record {qid} has no 'cluster' field; skipping in group_clusters.")
             continue
-        clabel = str(c)  # ← normalize to string
+        clabel = str(c)
         groups.setdefault(clabel, {})[qid] = rec
     return groups
+
 
 def assign_to_cluster(
     mh_fx: MHMap,
@@ -41,7 +39,6 @@ def assign_to_cluster(
     if not mh_clust:
         return {}, {qid: qinfo for qid, qinfo in mh_fx.items()}
 
-    # Merge MinHash per cluster
     mh_merged: Dict[str, Dict[str, Rec]] = {}
     for clabel, members in mh_clust.items():
         for i, (_, rec) in enumerate(members.items()):
@@ -54,7 +51,6 @@ def assign_to_cluster(
 
     assigned: MHMap = {}
     remainder: MHMap = {}
-
     merged_dist_cache = dist_cache if dist_cache is not None else DistanceCache()
 
     for qid, qinfo in mh_fx.items():
@@ -63,7 +59,6 @@ def assign_to_cluster(
         for clabel, cinfo in mh_merged.items():
             local_map = {qid: qinfo} | cinfo
             d = _merged_distance(qid, clabel, mh_map=local_map, cache=merged_dist_cache)
-            # logging.info(f"{qid} distance to {clabel}: {d}")
             if d < threshold and d <= min_dist:
                 min_dist = d
                 candidate_clusters.append(clabel)
@@ -86,6 +81,7 @@ def _next_cluster_label(cmap: ClusterMap) -> str:
         except Exception:
             raise ValueError(f"Cluster names must be integers: {c}")
     return str(max(current) + 1)
+
 
 def _pairwise_distance_matrix(ids: List[str], mh_map: MHMap, cache: DistanceCache) -> np.ndarray:
     n = len(ids)
@@ -124,89 +120,60 @@ def create_new_clusters(
 ) -> ClusterMap:
     mh_clust: ClusterMap = {} if existing is None else {str(k): dict(v) for k, v in existing.items()}
 
-    # No samples
     qids_all = list(mh_fx.keys())
     if len(qids_all) == 0:
         return mh_clust
 
-    # One sample
     if len(qids_all) == 1:
         clabel = _next_cluster_label(mh_clust)
         _add_members_to_cluster(clabel, [qids_all[0]], mh_fx, mh_clust)
         return mh_clust
 
-    # Two or more samples
     remainder_ids = qids_all[:]
 
     while remainder_ids:
-        # Subset to batch size (avoid compute limits)
         batch_ids = remainder_ids[:batch_size]
 
-        # Batch size was set to 1 (why tho?)
         if len(batch_ids) == 1:
             clabel = _next_cluster_label(mh_clust)
             _add_members_to_cluster(clabel, batch_ids, mh_fx, mh_clust)
             remainder_ids = remainder_ids[1:]
-        # Batch size is > 1
         else:
             D = _pairwise_distance_matrix(batch_ids, mh_fx, dist_cache)
             db = DBSCAN(eps=eps, min_samples=min_samples, metric="precomputed")
             labels = db.fit_predict(D)
 
-            # Group samples by DBSCAN cluster label (not final cluster label - adjusted next step)
             label_to_members: Dict[int, List[str]] = {}
             for idx, lbl in enumerate(labels):
                 label_to_members.setdefault(int(lbl), []).append(batch_ids[idx])
 
-            # Update cluster label based on existing labels - skips "noise" (-1) for now
             for lbl, members in label_to_members.items():
                 if lbl == -1:
                     continue
                 clabel = _next_cluster_label(mh_clust)
                 _add_members_to_cluster(clabel, members, mh_fx, mh_clust)
-            
-            # Assign cluster labels for "noise" - each in own cluster
+
             for noise_id in label_to_members.get(-1, []):
                 clabel = _next_cluster_label(mh_clust)
                 _add_members_to_cluster(clabel, [noise_id], mh_fx, mh_clust)
 
-            # Update the remainder based on the batch size
             remainder_ids = remainder_ids[len(batch_ids):]
 
-        # Attempt to assign remainder to existing clusters, again. Really only needed for the "new" clusters just created above
         if remainder_ids:
             remaining_map: MHMap = {qid: mh_fx[qid] for qid in remainder_ids}
             assigned, still_left = assign_to_cluster(
                 remaining_map, mh_clust, threshold=eps, dist_cache=dist_cache,
             )
-
             for qid, rec in assigned.items():
                 clabel = str(rec['cluster'])
                 mh_clust.setdefault(clabel, {})[qid] = rec
-
-            # Figure out what is left
             remainder_ids = list(still_left.keys())
 
     return mh_clust
 
 
-def _pairwise_dist_full(ids: List[str], mh_map: MHMap, cache: DistanceCache) -> np.ndarray:
-    """Compute full symmetric distance matrix for given ids using _distance."""
-    n = len(ids)
-    D = np.zeros((n, n), dtype=float)
-    for i in range(n):
-        for j in range(i + 1, n):
-            a, b = ids[i], ids[j]
-            local_map = {a: mh_map[a], b: mh_map[b]}
-            d = _distance(a, b, mh_map=local_map, cache=cache)
-            D[i, j] = D[j, i] = float(d)
-    return D
-
 def _pcoa_from_dist(D: np.ndarray, n_components: int = 2):
-    """
-    Classical MDS / PCoA from a (n x n) distance matrix D.
-    Returns: coords (n x k), eigvals (k,), explained (k,)
-    """
+    """Classical MDS / PCoA from a (n x n) distance matrix D."""
     if D.shape[0] != D.shape[1]:
         raise ValueError("Distance matrix must be square.")
     if not np.allclose(D, D.T, atol=1e-12):
@@ -216,22 +183,16 @@ def _pcoa_from_dist(D: np.ndarray, n_components: int = 2):
         D = D.copy()
         np.fill_diagonal(D, 0.0)
 
-    # Double-center the squared distances: B = -0.5 * J D^2 J
     n = D.shape[0]
     D2 = D ** 2
     J = np.eye(n) - np.full((n, n), 1.0 / n)
     B = -0.5 * J @ D2 @ J
 
-    # Eigen-decomposition of B (symmetric)
-    # eigh returns ascending order; take largest eigenpairs from the end
     eigvals, eigvecs = np.linalg.eigh(B)
-
-    # Sort descending
     idx = np.argsort(eigvals)[::-1]
     eigvals = eigvals[idx]
     eigvecs = eigvecs[:, idx]
 
-    # Keep only positive eigenvalues (within tolerance)
     pos = eigvals > 1e-12
     if not np.any(pos):
         raise ValueError("No positive eigenvalues found; check the distance matrix.")
@@ -243,79 +204,66 @@ def _pcoa_from_dist(D: np.ndarray, n_components: int = 2):
     eigvecs_k = eigvecs_pos[:, :k]
 
     coords = eigvecs_k * np.sqrt(eigvals_k)
-
-    # Variance explained (proportion) by each retained axis relative to sum of positive eigvals
     total_pos = np.sum(eigvals_pos)
     explained = eigvals_k / total_pos if total_pos > 0 else np.zeros_like(eigvals_k)
 
     return coords, eigvals_k, explained
 
 
+def _cluster_labels(ids: List[str], mh_map: MHMap) -> List[str]:
+    """Extract cluster label strings for a list of IDs, falling back to 'unassigned'."""
+    return [
+        str(mh_map[sid]["cluster"]) if mh_map[sid].get("cluster") is not None else "unassigned"
+        for sid in ids
+    ]
+
+
 def pcoa_plot(
-    mh_map,
-    dist_cache,
+    mh_map: MHMap,
+    dist_cache: DistanceCache,
     *,
-    n_components: int = 2,          # set to 3 for 3D
+    n_components: int = 2,
     title: str = "PCoA of MinHash distances",
-    save_html: Optional[str] = None # e.g., "pcoa.html"
+    save_html: Optional[str] = None,
 ) -> go.Figure:
-    """
-    Make an interactive Plotly PCoA (Classical MDS) plot between all samples in mh_map.
-    - Uses your _pairwise_dist_full(...) to build the dissimilarity matrix (D).
-    - Deterministic: no random init; identical samples overlap.
-    - Colors points by 'cluster' if present, else 'unassigned'.
-    - Returns a Plotly Figure; optionally writes to HTML if save_html is given.
-    """
+    """Interactive Plotly PCoA (Classical MDS) plot for all samples in mh_map."""
     ids = list(mh_map.keys())
     if len(ids) < 2:
         logging.warning("Two or more samples required to create PCoA plot!")
-        return
+        return None
 
-    # Build distance matrix
-    D = _pairwise_dist_full(ids, mh_map, dist_cache)
+    D = _pairwise_distance_matrix(ids, mh_map, dist_cache)
+    coords, _, explained = _pcoa_from_dist(D, n_components=n_components)
+    clusters = _cluster_labels(ids, mh_map)
 
-    # Classical MDS / PCoA
-    coords, eigvals_k, explained = _pcoa_from_dist(D, n_components=n_components)
-
-    # Cluster labels
-    clusters: List[str] = []
-    for sid in ids:
-        c = mh_map[sid].get("cluster")
-        clusters.append(str(c) if c is not None else "unassigned")
-
-    # Axis titles with % variance explained
     def ax_label(i: int) -> str:
         pct = 100.0 * (explained[i] if i < len(explained) else 0.0)
         return f"PCoA{i+1} ({pct:.1f}%)"
 
-    # Build Plotly figure per cluster (clean legend)
     fig = go.Figure()
     for cl in sorted(set(clusters), key=lambda s: (s == "unassigned", s)):
         idxs = [i for i, c in enumerate(clusters) if c == cl]
+        hover = [f"sid={ids[i]}<br>cluster={cl}" for i in idxs]
         if n_components == 3:
             fig.add_trace(go.Scatter3d(
                 x=coords[idxs, 0], y=coords[idxs, 1], z=coords[idxs, 2],
-                mode="markers", name=str(cl), marker=dict(size=8, opacity=0.9),
-                text=[f"sid={ids[i]}<br>cluster={cl}" for i in idxs],
-                hovertemplate="%{text}<extra></extra>",
+                mode="markers", name=str(cl),
+                marker=dict(size=8, opacity=0.9),
+                text=hover, hovertemplate="%{text}<extra></extra>",
             ))
         else:
             fig.add_trace(go.Scatter(
                 x=coords[idxs, 0], y=coords[idxs, 1],
-                mode="markers", name=str(cl), marker=dict(size=10, opacity=0.9),
-                text=[f"sid={ids[i]}<br>cluster={cl}" for i in idxs],
-                hovertemplate="%{text}<extra></extra>",
+                mode="markers", name=str(cl),
+                marker=dict(size=10, opacity=0.9),
+                text=hover, hovertemplate="%{text}<extra></extra>",
             ))
 
     if n_components == 3:
         fig.update_layout(
             title=title,
-            scene=dict(
-                xaxis_title=ax_label(0),
-                yaxis_title=ax_label(1),
-                zaxis_title=ax_label(2),
-            ),
-            legend_title_text="cluster"
+            scene=dict(xaxis_title=ax_label(0), yaxis_title=ax_label(1), zaxis_title=ax_label(2)),
+            legend_title_text="cluster",
         )
     else:
         fig.update_layout(
@@ -330,49 +278,155 @@ def pcoa_plot(
 
     return fig
 
-def calculate_cluster_distances(new_ids, mh_clust, dist_cache, outdir):
 
+def nj_tree(
+    mh_map: MHMap,
+    dist_cache: DistanceCache,
+    *,
+    title: str = "Neighbor-Joining Tree",
+    save_html: Optional[str] = None,
+    save_newick: Optional[str] = None,
+) -> go.Figure:
+    """
+    Build a Neighbor-Joining tree and render it as an interactive Plotly figure.
+    Requires: pip install biopython
+    """
+    from Bio import Phylo
+    from Bio.Phylo.TreeConstruction import DistanceMatrix, DistanceTreeConstructor
+
+    ids = list(mh_map.keys())
+    n = len(ids)
+    if n < 2:
+        logging.warning("Two or more samples required to build NJ tree!")
+        return None
+
+    D = _pairwise_distance_matrix(ids, mh_map, dist_cache)
+
+    # Bio.Phylo expects a lower-triangle matrix (row i has i+1 entries)
+    lower = [[float(D[i, j]) for j in range(i + 1)] for i in range(n)]
+    dm = DistanceMatrix(names=ids, matrix=lower)
+    tree = DistanceTreeConstructor().nj(dm)
+    tree.root_at_midpoint()  # ← midpoint root
+
+    if save_newick:
+        Phylo.write(tree, save_newick, "newick")
+        logging.info(f"Newick tree written to {save_newick}")
+
+    # x = cumulative branch length from root; y = evenly spaced leaves
+    def _x_positions(tree) -> Dict[int, float]:
+        pos: Dict[int, float] = {}
+        def _walk(clade, cum: float):
+            cum += clade.branch_length or 0.0
+            pos[id(clade)] = cum
+            for child in clade.clades:
+                _walk(child, cum)
+        _walk(tree.root, 0.0)
+        return pos
+
+    def _y_positions(tree) -> Dict[int, float]:
+        leaf_y = {id(lf): i for i, lf in enumerate(tree.get_terminals())}
+        pos: Dict[int, float] = {}
+        def _walk(clade):
+            if clade.is_terminal():
+                pos[id(clade)] = leaf_y[id(clade)]
+            else:
+                for child in clade.clades:
+                    _walk(child)
+                pos[id(clade)] = sum(pos[id(c)] for c in clade.clades) / len(clade.clades)
+        _walk(tree.root)
+        return pos
+
+    x_pos = _x_positions(tree)
+    y_pos = _y_positions(tree)
+
+    # Collect branch edges
+    edge_x: List[Optional[float]] = []
+    edge_y: List[Optional[float]] = []
+
+    def _collect_edges(clade, parent_x: float, parent_y: float):
+        cx, cy = x_pos[id(clade)], y_pos[id(clade)]
+        edge_x.extend([parent_x, cx, None])   # horizontal
+        edge_y.extend([cy, cy, None])
+        edge_x.extend([parent_x, parent_x, None])  # vertical
+        edge_y.extend([parent_y, cy, None])
+        for child in clade.clades:
+            _collect_edges(child, cx, cy)
+
+    root = tree.root
+    for child in root.clades:
+        _collect_edges(child, x_pos[id(root)], y_pos[id(root)])
+
+    clusters = {sid: cl for sid, cl in zip(ids, _cluster_labels(ids, mh_map))}
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=edge_x, y=edge_y,
+        mode="lines", line=dict(color="grey", width=1),
+        hoverinfo="skip", showlegend=False,
+    ))
+
+    # Group leaves by cluster for a clean legend
+    cluster_groups: Dict[str, List] = {}
+    for leaf in tree.get_terminals():
+        cl = clusters.get(leaf.name, "unassigned")
+        cluster_groups.setdefault(cl, []).append(
+            (leaf.name, x_pos[id(leaf)], y_pos[id(leaf)])
+        )
+
+    for cl in sorted(cluster_groups, key=lambda s: (s == "unassigned", s)):
+        members = cluster_groups[cl]
+        fig.add_trace(go.Scatter(
+            x=[m[1] for m in members],
+            y=[m[2] for m in members],
+            mode="markers+text",
+            name=cl,
+            text=[m[0] for m in members],
+            textposition="middle right",
+            marker=dict(size=8, opacity=0.9),
+            customdata=[f"sid={m[0]}<br>cluster={cl}" for m in members],
+            hovertemplate="%{customdata}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis=dict(title="Branch length", zeroline=False),
+        yaxis=dict(showticklabels=False, zeroline=False),
+        legend_title_text="cluster",
+        plot_bgcolor="white",
+    )
+
+    if save_html:
+        fig.write_html(save_html, include_plotlyjs="cdn")
+
+    return fig
+
+
+def calculate_cluster_distances(new_ids, mh_clust, dist_cache, outdir):
     dist_dir = os.path.join(outdir, "dist")
     os.makedirs(dist_dir, exist_ok=True)
-    
+
     for c, s in mh_clust.items():
         cluster_ids = list(s.keys())
 
-        # Only process clusters containing at least one of the new IDs
         if not (set(cluster_ids) & set(new_ids)):
             continue
-            
-        # Calculate pairwise distance matrix
-        D = _pairwise_dist_full(cluster_ids, s, dist_cache)
 
-        # --- Compute statistics (upper triangle only, i < j) ---
-        dvals = []
-        n = len(cluster_ids)
-        for i in range(n):
-            for j in range(i + 1, n):
-                dvals.append(D[i, j])
+        D = _pairwise_distance_matrix(cluster_ids, s, dist_cache)
+
+        dvals = [D[i, j] for i in range(len(cluster_ids)) for j in range(i + 1, len(cluster_ids))]
 
         if dvals:
-            avg_val = statistics.mean(dvals)
-            stdev_val = statistics.stdev(dvals) if len(dvals) > 1 else 0.0
-            min_val = min(dvals)
-            max_val = max(dvals)
-
             logging.info(
                 f"Cluster {c}: N={len(cluster_ids)}, "
-                f"mean={avg_val:.6f}, stdev={stdev_val:.6f}, "
-                f"min={min_val:.6f}, max={max_val:.6f}"
+                f"mean={statistics.mean(dvals):.6f}, "
+                f"stdev={statistics.stdev(dvals) if len(dvals) > 1 else 0.0:.6f}, "
+                f"min={min(dvals):.6f}, max={max(dvals):.6f}"
             )
         else:
             logging.info(f"Cluster {c}: only one element; no pairwise distance stats.")
 
-        # --- Save wide form (matrix format) as gzipped TSV ---
         wide_file = os.path.join(dist_dir, f"{c}.tsv.gz")
         with gzip.open(wide_file, "wt", encoding="utf-8") as f:
-            # Header row
             f.write('\t' + '\t'.join(cluster_ids) + '\n')
-
-            # Data rows
             for i, row_id in enumerate(cluster_ids):
-                row_vals = '\t'.join(str(D[i, j]) for j in range(n))
-                f.write(row_id + '\t' + row_vals + '\n')
+                f.write(row_id + '\t' + '\t'.join(str(D[i, j]) for j in range(len(cluster_ids))) + '\n')
